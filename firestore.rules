@@ -1,0 +1,55 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: latest
+// Document ID: status
+// Fields:
+//   - nitrogen: number (required) - Nitrogen level in mg/kg
+//   - phosphorus: number (required) - Phosphorus level in mg/kg
+//   - potassium: number (required) - Potassium level in mg/kg
+//   - temperature: number (required) - Temperature in Celsius
+//   - humidity: number (required) - Humidity percentage
+//   - latitude: number (optional) - GPS Latitude
+//   - longitude: number (optional) - GPS Longitude
+//   - timestamp: string (required) - ISO 8601 timestamp
+//   - source: string (optional) - Data source label
+//
+// Collection: readings
+// Document ID: [auto-generated]
+// Fields:
+//   - [Same as latest/status]
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // WARNING: Public access enabled for direct ESP32 connection
+    match /latest/status {
+      allow read, write: if true;
+    }
+
+    match /readings/{readingId} {
+      allow read, write: if true;
+    }
+    
+    // Default deny for everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

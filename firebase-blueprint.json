@@ -1,0 +1,31 @@
+{
+  "entities": {
+    "SoilReading": {
+      "title": "Soil Reading",
+      "description": "A single telemetry reading from the ESP32 sensor suite",
+      "type": "object",
+      "properties": {
+        "nitrogen": { "type": "number", "description": "Nitrogen level (mg/kg)" },
+        "phosphorus": { "type": "number", "description": "Phosphorus level (mg/kg)" },
+        "potassium": { "type": "number", "description": "Potassium level (mg/kg)" },
+        "temperature": { "type": "number", "description": "Temperature in Celsius" },
+        "humidity": { "type": "number", "description": "Relative humidity percentage" },
+        "latitude": { "type": "number", "description": "GPS Latitude" },
+        "longitude": { "type": "number", "description": "GPS Longitude" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the reading was recorded" },
+        "source": { "type": "string", "description": "Origin of the data (e.g., ESP32)" }
+      },
+      "required": ["nitrogen", "phosphorus", "potassium", "temperature", "humidity", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/readings": {
+      "schema": "SoilReading",
+      "description": "Historical log of all sensor readings"
+    },
+    "/latest/status": {
+      "schema": "SoilReading",
+      "description": "The most recent reading for real-time dashboard display"
+    }
+  }
+}
