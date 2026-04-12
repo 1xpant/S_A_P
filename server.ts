@@ -8,9 +8,10 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: true }));
 
-  // Mock data state
+  // Current state of the soil
   let soilData = {
     nitrogen: 45.2,
     phosphorus: 32.8,
@@ -20,12 +21,13 @@ async function startServer() {
     latitude: 37.7749,
     longitude: -122.4194,
     lastUpdate: new Date().toLocaleTimeString(),
-    source: "Simulated"
+    source: "Simulated",
+    lastPostTime: "Never"
   };
 
   let mockDataEnabled = true;
 
-  // Update mock data periodically (only if real data isn't being received)
+  // Mock data simulation (runs until real ESP32 data arrives)
   const mockInterval = setInterval(() => {
     if (!mockDataEnabled) return;
     soilData = {
@@ -40,24 +42,26 @@ async function startServer() {
     };
   }, 2000);
 
-  // API Routes
+  // GET: Used by the React Dashboard
   app.get("/api/data", (req, res) => {
     res.json(soilData);
   });
 
+  // POST: Used by your ESP32
   app.post("/api/data", (req, res) => {
-    console.log("--- Telemetry POST Received ---");
-    console.log("Headers:", req.headers);
-    console.log("Body:", req.body);
+    console.log("\n--- [TELEMETRY INBOUND] ---");
+    console.log("Time:", new Date().toISOString());
+    console.log("Headers:", JSON.stringify(req.headers, null, 2));
+    console.log("Body:", JSON.stringify(req.body, null, 2));
 
     const { nitrogen, phosphorus, potassium, temperature, humidity, latitude, longitude } = req.body;
     
-    if (Object.keys(req.body).length === 0) {
-      console.warn("Warning: Received empty POST body from ESP32");
-      return res.status(400).json({ status: "error", message: "Empty body" });
+    if (!req.body || Object.keys(req.body).length === 0) {
+      console.error("!!! ERROR: Received empty body from ESP32 !!!");
+      return res.status(400).json({ status: "error", message: "Empty body received" });
     }
 
-    // Disable mock data once we receive a real payload
+    // Disable mock data once we receive a real payload from the ESP32
     mockDataEnabled = false;
 
     soilData = {
@@ -69,10 +73,24 @@ async function startServer() {
       latitude: Number(latitude ?? soilData.latitude),
       longitude: Number(longitude ?? soilData.longitude),
       lastUpdate: new Date().toLocaleTimeString(),
-      source: "Live (ESP32)"
+      source: "Live (ESP32)",
+      lastPostTime: new Date().toLocaleTimeString()
     };
 
-    console.log("Updated soilData:", soilData);
+    // Write to a file so the agent can verify receipt
+    try {
+      const fs = await import('fs');
+      fs.writeFileSync('telemetry_log.json', JSON.stringify({
+        timestamp: new Date().toISOString(),
+        data: soilData,
+        receivedBody: req.body
+      }, null, 2));
+    } catch (e) {
+      console.error("Failed to write telemetry log:", e);
+    }
+
+    console.log("--- [STATE UPDATED] ---");
+    console.log(soilData);
     res.json({ status: "success", message: "Telemetry updated" });
   });
 

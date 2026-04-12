@@ -38,6 +38,7 @@ interface SoilData {
   longitude: number;
   lastUpdate: string;
   source?: string;
+  lastPostTime?: string;
 }
 
 const Gauge = ({ label, value, color, icon: Icon, delay = 0 }: { label: string, value: number, color: string, icon: any, delay?: number }) => (
@@ -123,7 +124,8 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const response = await fetch('/api/data');
+      // Added cache buster to ensure fresh data
+      const response = await fetch(`/api/data?t=${Date.now()}`);
       if (!response.ok) throw new Error('Failed to fetch data');
       const newData = await response.json();
       setPrevData(data);
