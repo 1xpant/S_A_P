@@ -1,0 +1,5 @@
+{
+  "name": "SoilGuard Pro",
+  "description": "Advanced real-time soil monitoring system with nutrient tracking and environmental analytics.",
+  "requestFramePermissions": ["geolocation"]
+}

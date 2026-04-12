@@ -1,0 +1,62 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-brand-primary: #10b981;
+  --color-brand-secondary: #3b82f6;
+  --color-brand-accent: #f59e0b;
+  --color-surface-dark: #020617;
+  --color-surface-card: #0f172a;
+}
+
+@layer base {
+  body {
+    @apply bg-surface-dark text-slate-300 antialiased selection:bg-emerald-500/30;
+    background-image: 
+      radial-gradient(circle at 50% -20%, rgba(16, 185, 129, 0.1) 0%, transparent 50%),
+      linear-gradient(rgba(15, 23, 42, 0.5) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(15, 23, 42, 0.5) 1px, transparent 1px);
+    background-size: 100% 100%, 40px 40px, 40px 40px;
+  }
+}
+
+.glass-card {
+  @apply bg-slate-900/40 backdrop-blur-xl border border-slate-800/50 rounded-2xl overflow-hidden shadow-2xl transition-all duration-300;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+}
+
+.glass-card:hover {
+  @apply border-slate-700/50 bg-slate-900/60;
+}
+
+.text-gradient {
+  @apply bg-clip-text text-transparent bg-gradient-to-br from-emerald-400 via-teal-400 to-blue-500 font-black;
+}
+
+.tech-label {
+  @apply text-[10px] uppercase tracking-[0.2em] font-bold text-slate-500 font-mono;
+}
+
+.glow-emerald {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.2);
+}
+
+.glow-blue {
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);
+}
+
+.glow-amber {
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.2);
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 3s infinite ease-in-out;
+}
