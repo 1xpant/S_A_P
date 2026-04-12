@@ -16,6 +16,17 @@
         "source": { "type": "string", "description": "Origin of the data (e.g., ESP32)" }
       },
       "required": ["nitrogen", "phosphorus", "potassium", "temperature", "humidity", "timestamp"]
+    },
+    "LogEntry": {
+      "title": "Log Entry",
+      "description": "Manual notes or observations added by the user",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string", "description": "The note content" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the note was created" },
+        "type": { "type": "string", "enum": ["observation", "action", "alert"], "description": "Category of the log" }
+      },
+      "required": ["content", "timestamp", "type"]
     }
   },
   "firestore": {
@@ -26,6 +37,10 @@
     "/latest/status": {
       "schema": "SoilReading",
       "description": "The most recent reading for real-time dashboard display"
+    },
+    "/logs": {
+      "schema": "LogEntry",
+      "description": "User-generated field notes"
     }
   }
 }

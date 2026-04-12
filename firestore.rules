@@ -46,6 +46,10 @@ service cloud.firestore {
     match /readings/{readingId} {
       allow read, write: if true;
     }
+
+    match /logs/{logId} {
+      allow read, write: if true;
+    }
     
     // Default deny for everything else
     match /{document=**} {
