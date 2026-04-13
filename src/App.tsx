@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { GoogleGenAI } from "@google/genai";
 import { 
   Thermometer, 
   Droplets, 
@@ -56,6 +57,57 @@ import { doc, onSnapshot, collection, query, orderBy, limit, deleteDoc, getDocs,
 import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "firebase/auth";
 import { analyzeSoilData } from "./services/geminiService";
 import Markdown from 'react-markdown';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 interface SoilData {
   nitrogen: number;
@@ -164,12 +216,43 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [user, setUser] = useState<any>(null);
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'intelligence' | 'logbook'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'history' | 'intelligence' | 'logbook' | 'settings' | 'assistant' | 'control'>('overview');
+  const [nightVision, setNightVision] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'model', text: string }[]>([
+    { role: 'model', text: "Systems online. I am your SoilGuard AI Assistant. How can I help you optimize your field today?" }
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [selectedNode, setSelectedNode] = useState('Field Alpha');
+  const [irrigationActive, setIrrigationActive] = useState(false);
+  const [fertilizerActive, setFertilizerActive] = useState(false);
+  
+  const [thresholds, setThresholds] = useState({
+    nitrogen: { min: 20, max: 80 },
+    phosphorus: { min: 20, max: 80 },
+    potassium: { min: 20, max: 80 },
+    temp: { min: 15, max: 35 },
+    humidity: { min: 30, max: 80 }
+  });
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [logs, setLogs] = useState<any[]>([]);
   const [newLog, setNewLog] = useState("");
   const [logType, setLogType] = useState<'observation' | 'action' | 'alert'>('observation');
+
+  const [weather, setWeather] = useState({ temp: 24, condition: 'Sunny', humidity: 45 });
+
+  useEffect(() => {
+    // Simulate weather fetch based on location
+    const timer = setTimeout(() => {
+      setWeather({
+        temp: Math.floor(Math.random() * 10) + 20,
+        condition: ['Sunny', 'Partly Cloudy', 'Overcast'][Math.floor(Math.random() * 3)],
+        humidity: Math.floor(Math.random() * 20) + 40
+      });
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [data?.latitude]);
 
   const calculateHealthScore = (d: SoilData) => {
     if (!d) return 0;
@@ -181,11 +264,11 @@ export default function App() {
 
     if (n === undefined || p === undefined || k === undefined) return 0;
 
-    const nScore = Math.min(n / 50, 1) * 20;
-    const pScore = Math.min(p / 50, 1) * 20;
-    const kScore = Math.min(k / 50, 1) * 20;
-    const tScore = t !== undefined && t > 15 && t < 30 ? 20 : 10;
-    const hScore = h !== undefined && h > 40 && h < 70 ? 20 : 10;
+    const nScore = n >= thresholds.nitrogen.min && n <= thresholds.nitrogen.max ? 20 : 10;
+    const pScore = p >= thresholds.phosphorus.min && p <= thresholds.phosphorus.max ? 20 : 10;
+    const kScore = k >= thresholds.potassium.min && k <= thresholds.potassium.max ? 20 : 10;
+    const tScore = t !== undefined && t >= thresholds.temp.min && t <= thresholds.temp.max ? 20 : 10;
+    const hScore = h !== undefined && h >= thresholds.humidity.min && h <= thresholds.humidity.max ? 20 : 10;
     return nScore + pScore + kScore + tScore + hScore;
   };
 
@@ -226,13 +309,14 @@ export default function App() {
   const handleAddLog = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user || !newLog.trim()) return;
+    const path = 'logs';
     try {
-      await addDoc(collection(db, 'logs'), {
+      await addDoc(collection(db, path), {
         content: newLog,
         type: logType,
         timestamp: new Date().toISOString(),
         userId: user.uid
-      });
+      }).catch(err => handleFirestoreError(err, OperationType.CREATE, path));
       setNewLog("");
     } catch (err) {
       console.error("Error adding log:", err);
@@ -241,31 +325,50 @@ export default function App() {
 
   const handleDeleteReading = async (id: string) => {
     if (!user) return;
+    const path = `readings/${id}`;
     try {
-      await deleteDoc(doc(db, 'readings', id));
+      await deleteDoc(doc(db, 'readings', id)).catch(err => handleFirestoreError(err, OperationType.DELETE, path));
     } catch (err) {
       console.error("Error deleting reading:", err);
     }
   };
 
   const handleClearHistory = async () => {
-    if (!user || !window.confirm("Are you sure you want to clear all history? This cannot be undone.")) return;
+    if (!user) {
+      alert("Authentication Required: Please sign in to clear history.");
+      return;
+    }
+    if (!window.confirm("Are you sure you want to clear all history? This cannot be undone.")) return;
     try {
-      const q = query(collection(db, 'readings'), limit(450)); // Stay under 500 batch limit
-      const snapshot = await getDocs(q);
-      if (snapshot.empty) {
-        alert("No readings to clear.");
+      const path = 'readings';
+      const q = query(collection(db, path), limit(450));
+      const snapshot = await getDocs(q).catch(err => handleFirestoreError(err, OperationType.LIST, path));
+      
+      if (!snapshot || snapshot.empty) {
+        alert("No readings found to clear.");
         return;
       }
+      
       const batch = writeBatch(db);
       snapshot.docs.forEach((doc) => {
         batch.delete(doc.ref);
       });
-      await batch.commit();
-      alert(`Successfully cleared ${snapshot.docs.length} readings.`);
-    } catch (err) {
+      
+      await batch.commit().catch(err => handleFirestoreError(err, OperationType.WRITE, path));
+      
+      if (snapshot.docs.length === 450) {
+        alert(`Cleared ${snapshot.docs.length} readings. There are more records remaining; please click 'Clear All' again to continue.`);
+      } else {
+        alert(`Successfully cleared ${snapshot.docs.length} readings.`);
+      }
+    } catch (err: any) {
       console.error("Error clearing history:", err);
-      alert("Failed to clear history. Check console for details.");
+      let message = err.message;
+      try {
+        const parsed = JSON.parse(err.message);
+        message = parsed.error;
+      } catch (e) {}
+      alert("Failed to clear history: " + message + "\n\nTip: Ensure you have 'delete' permissions in your Firestore rules.");
     }
   };
 
@@ -285,12 +388,10 @@ export default function App() {
         setData(newData);
         setLoading(false);
       } else {
-        // Fallback if no data in Firebase yet
         fetchFallbackData();
       }
     }, (err) => {
-      console.error("Firestore Error (Latest):", err);
-      // Only show error if we don't have fallback data
+      handleFirestoreError(err, OperationType.GET, 'latest/status');
       if (!data) {
         setError("Database connection error. Please sign in.");
         setLoading(false);
@@ -319,6 +420,8 @@ export default function App() {
         };
       }).reverse();
       setHistory(readings);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, 'readings');
     });
 
     // 3. Listen to logs
@@ -354,14 +457,53 @@ export default function App() {
   const handleLogin = async () => {
     try {
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
       await signInWithPopup(auth, provider);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Login Error:", err);
+      if (err.code === 'auth/popup-blocked') {
+        alert("Sign-in popup was blocked! Please allow popups for this website in your browser settings and try again.");
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        // Ignore user cancellation
+      } else {
+        alert("Login failed: " + err.message + "\n\nIf you are on Vercel, make sure your domain is added to 'Authorized domains' in the Firebase Console.");
+      }
     }
   };
 
   const handleLogout = async () => {
     await signOut(auth);
+  };
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || chatLoading) return;
+
+    const userMessage = chatInput.trim();
+    setChatMessages(prev => [...prev, { role: 'user', text: userMessage }]);
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          { role: 'user', parts: [{ text: `You are the SoilGuard Pro AI Assistant. You have access to the following soil telemetry: ${JSON.stringify(data)}. The user says: ${userMessage}` }] }
+        ],
+        config: {
+          systemInstruction: "You are a professional agronomist and AI assistant for SoilGuard Pro. Be concise, technical, and helpful. Use markdown for formatting."
+        }
+      });
+
+      const aiText = response.text || "I'm sorry, I couldn't process that request.";
+      setChatMessages(prev => [...prev, { role: 'model', text: aiText }]);
+    } catch (err) {
+      console.error("Chat Error:", err);
+      setChatMessages(prev => [...prev, { role: 'model', text: "Error: Uplink interrupted. Please check your API key and connection." }]);
+    } finally {
+      setChatLoading(false);
+    }
   };
 
   if (loading && !data) {
@@ -401,21 +543,21 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#020617] text-slate-200">
+    <div className={`min-h-screen flex flex-col ${nightVision ? 'bg-black text-rose-600' : 'bg-[#020617] text-slate-200'} transition-colors duration-500`}>
       <div className="flex-grow p-4 md:p-10 max-w-[1600px] mx-auto w-full space-y-10 overflow-x-hidden">
         {/* Top Navigation / Status Bar */}
         <div className="flex flex-wrap items-center justify-between gap-6 px-2">
         <div className="flex items-center gap-4">
           <motion.div 
             whileHover={{ scale: 1.05 }}
-            className="p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20 shadow-lg shadow-emerald-500/5"
+            className={`p-3 rounded-2xl border shadow-lg ${nightVision ? 'bg-rose-950/20 border-rose-500/20 shadow-rose-500/5' : 'bg-emerald-500/10 border-emerald-500/20 shadow-emerald-500/5'}`}
           >
-            <Sprout className="text-emerald-400" size={32} />
+            <Sprout className={nightVision ? 'text-rose-500' : 'text-emerald-400'} size={32} />
           </motion.div>
           <div>
-            <h1 className="text-3xl font-black tracking-tighter text-gradient leading-none mb-1">SOILGUARD PRO</h1>
+            <h1 className={`text-3xl font-black tracking-tighter leading-none mb-1 ${nightVision ? 'text-rose-600' : 'text-gradient'}`}>SOILGUARD PRO</h1>
             <div className="flex items-center gap-2">
-              <span className="tech-label text-emerald-500/80">V4.2.0 Stable</span>
+              <span className={`tech-label ${nightVision ? 'text-rose-700' : 'text-emerald-500/80'}`}>V4.5.0 Tactical</span>
               <span className="w-1 h-1 rounded-full bg-slate-700" />
               <span className="tech-label">Command Center</span>
             </div>
@@ -423,17 +565,31 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-6">
-          <div className="flex bg-slate-950/50 p-1 rounded-xl border border-slate-800">
+          <button 
+            onClick={() => setNightVision(!nightVision)}
+            className={`p-2 rounded-xl border transition-all ${nightVision ? 'bg-rose-500 text-black border-rose-400' : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-emerald-500/50'}`}
+            title="Toggle Night Vision"
+          >
+            <Zap size={18} className={nightVision ? 'animate-pulse' : ''} />
+          </button>
+          <div className={`flex p-1 rounded-xl border ${nightVision ? 'bg-rose-950/20 border-rose-900/50' : 'bg-slate-950/50 border-slate-800'}`}>
             {[
               { id: 'overview', label: 'OVERVIEW', icon: PulseIcon },
               { id: 'history', label: 'HISTORY', icon: History },
               { id: 'intelligence', label: 'AI INTEL', icon: BrainCircuit },
-              { id: 'logbook', label: 'LOGBOOK', icon: FileText }
+              { id: 'assistant', label: 'ASSISTANT', icon: MessageSquare },
+              { id: 'control', label: 'CONTROL', icon: Zap },
+              { id: 'logbook', label: 'LOGBOOK', icon: FileText },
+              { id: 'settings', label: 'CONFIG', icon: Cpu }
             ].map((tab) => (
               <button 
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`px-4 py-2 rounded-lg text-[10px] font-black tracking-widest transition-all flex items-center gap-2 ${activeTab === tab.id ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:text-slate-300'}`}
+                className={`px-3 py-2 rounded-lg text-[9px] font-black tracking-widest transition-all flex items-center gap-2 ${
+                  activeTab === tab.id 
+                    ? (nightVision ? 'bg-rose-600 text-black shadow-lg shadow-rose-600/20' : 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20') 
+                    : (nightVision ? 'text-rose-900 hover:text-rose-400' : 'text-slate-500 hover:text-slate-300')
+                }`}
               >
                 <tab.icon size={12} />
                 {tab.label}
@@ -458,6 +614,15 @@ export default function App() {
                 <LogIn size={14} />
                 SIGN IN
               </button>
+            )}
+            {!user && (
+              <div className="group relative">
+                <AlertTriangle size={14} className="text-amber-500/50 cursor-help" />
+                <div className="absolute top-full right-0 mt-2 w-64 p-3 glass-card bg-slate-900 text-[9px] text-slate-400 leading-relaxed opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                  <p className="font-bold text-amber-400 mb-1">Vercel Deployment Tip:</p>
+                  If the sign-in popup doesn't open, ensure you've added your Vercel domain to the <span className="text-blue-400">Authorized Domains</span> in your Firebase Console (Authentication &gt; Settings).
+                </div>
+              </div>
             )}
           </div>
           <div className="glass-card px-4 py-2 flex items-center gap-3">
@@ -602,18 +767,72 @@ export default function App() {
                   delay={0.5}
                 />
               </div>
+
+              {/* Growth Timeline */}
+              <div className="glass-card p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-3">
+                    <Sprout className="text-emerald-400" size={20} />
+                    <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Growth Cycle</h2>
+                  </div>
+                  <span className="tech-label text-[10px] text-emerald-500">STAGE 3: VEGETATIVE</span>
+                </div>
+                <div className="relative pt-4 pb-8">
+                  <div className="absolute top-1/2 left-0 w-full h-0.5 bg-slate-800 -translate-y-1/2" />
+                  <div className="flex justify-between relative z-10">
+                    {[
+                      { label: 'Germination', active: true },
+                      { label: 'Seedling', active: true },
+                      { label: 'Vegetative', active: true, current: true },
+                      { label: 'Flowering', active: false },
+                      { label: 'Harvest', active: false }
+                    ].map((stage, i) => (
+                      <div key={i} className="flex flex-col items-center gap-3">
+                        <div className={`w-4 h-4 rounded-full border-2 transition-all duration-500 ${
+                          stage.current ? 'bg-emerald-500 border-white scale-125 glow-emerald' : 
+                          stage.active ? 'bg-emerald-500 border-emerald-500' : 'bg-slate-900 border-slate-700'
+                        }`} />
+                        <span className={`tech-label text-[8px] ${stage.active ? 'text-slate-200' : 'text-slate-600'}`}>{stage.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Right Column: System & Location */}
             <div className="xl:col-span-4 space-y-8">
+              {/* Weather & Yield */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="glass-card p-6 flex flex-col items-center justify-center text-center gap-2">
+                  <div className="p-3 rounded-full bg-blue-500/10 text-blue-400">
+                    <Wind size={20} />
+                  </div>
+                  <div className="text-2xl font-black font-mono text-slate-100">{weather.temp}°C</div>
+                  <span className="tech-label text-[8px] uppercase tracking-widest">{weather.condition}</span>
+                </div>
+                <div className="glass-card p-6 flex flex-col items-center justify-center text-center gap-2">
+                  <div className="p-3 rounded-full bg-emerald-500/10 text-emerald-400">
+                    <TrendingUp size={20} />
+                  </div>
+                  <div className="text-2xl font-black font-mono text-slate-100">84%</div>
+                  <span className="tech-label text-[8px] uppercase tracking-widest">Yield Forecast</span>
+                </div>
+              </div>
+
               {/* Soil Health Score */}
               <div className="glass-card p-8 relative overflow-hidden">
                 <div className="absolute top-0 right-0 p-4 opacity-5">
                   <Target size={120} />
                 </div>
-                <div className="flex items-center gap-3 mb-6">
-                  <Target className="text-emerald-400" size={20} />
-                  <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Health Score</h2>
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-3">
+                    <Target className="text-emerald-400" size={20} />
+                    <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Health Score</h2>
+                  </div>
+                  <div className="flex items-center gap-2 px-2 py-1 bg-slate-950/50 rounded-lg border border-slate-800">
+                    <span className="tech-label text-[8px] text-blue-400">{weather.temp}°C {weather.condition}</span>
+                  </div>
                 </div>
                 <div className="flex flex-col items-center justify-center py-4">
                   <div className="relative">
@@ -638,45 +857,54 @@ export default function App() {
                 </p>
               </div>
 
-              {/* Location Panel */}
+              {/* Satellite Map */}
               <div className="glass-card p-8 flex flex-col h-full">
                 <div className="flex items-center justify-between mb-8">
                   <div className="flex items-center gap-3">
                     <MapPin className="text-emerald-400" size={20} />
-                    <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Deployment Site</h2>
+                    <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Satellite View</h2>
                   </div>
                   <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse glow-emerald" />
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4 mb-8">
-                  <div className="p-4 bg-slate-950/40 rounded-xl border border-slate-800/50">
-                    <p className="tech-label text-[8px] mb-1 opacity-60">Latitude</p>
-                    <p className="font-mono text-sm font-bold text-slate-200">{(data?.latitude ?? 0).toFixed(6)}°</p>
-                  </div>
-                  <div className="p-4 bg-slate-950/40 rounded-xl border border-slate-800/50">
-                    <p className="tech-label text-[8px] mb-1 opacity-60">Longitude</p>
-                    <p className="font-mono text-sm font-bold text-slate-200">{(data?.longitude ?? 0).toFixed(6)}°</p>
-                  </div>
-                </div>
-
                 <div className="flex-1 min-h-[300px] rounded-2xl overflow-hidden border border-slate-800/50 relative group">
-                  <iframe 
-                    width="100%" 
-                    height="100%" 
-                    frameBorder="0" 
-                    style={{ border: 0, filter: 'invert(90%) hue-rotate(180deg) brightness(95%) contrast(90%)' }} 
-                    src={`https://maps.google.com/maps?q=${data?.latitude},${data?.longitude}&z=14&output=embed&hl=en&t=m`} 
-                    allowFullScreen
-                    referrerPolicy="no-referrer"
-                  />
+                  <div className="absolute inset-0 bg-[url('https://picsum.photos/seed/farm-satellite/800/600')] bg-cover bg-center grayscale group-hover:grayscale-0 transition-all duration-700" />
+                  <div className="absolute inset-0 bg-emerald-500/10 mix-blend-overlay" />
                   <div className="absolute inset-0 pointer-events-none border border-white/5 rounded-2xl" />
                   <div className="absolute bottom-4 left-4 right-4 p-3 glass-card bg-slate-950/80 border-slate-800/50 flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                      <span className="tech-label text-[8px]">GPS Lock Active</span>
+                      <span className="tech-label text-[8px]">GPS Lock: {data?.latitude?.toFixed(4)}, {data?.longitude?.toFixed(4)}</span>
                     </div>
                     <ChevronRight size={12} className="text-slate-600" />
                   </div>
+                </div>
+              </div>
+
+              {/* Predictive Alerts */}
+              <div className="glass-card p-8 border-rose-500/20">
+                <div className="flex items-center gap-3 mb-6">
+                  <AlertTriangle className="text-rose-500" size={20} />
+                  <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Predictive Alerts</h2>
+                </div>
+                <div className="space-y-4">
+                  {data && validateValue(data.nitrogen) !== undefined && (validateValue(data.nitrogen) || 0) < thresholds.nitrogen.min + 5 ? (
+                    <div className="p-4 bg-rose-500/10 rounded-xl border border-rose-500/20 flex items-start gap-3">
+                      <div className="mt-1 p-1 bg-rose-500 rounded-full" />
+                      <div>
+                        <p className="text-xs font-bold text-rose-400 uppercase tracking-wider">Low Nitrogen Warning</p>
+                        <p className="text-[10px] text-slate-400 mt-1">Levels are approaching the {thresholds.nitrogen.min} mg/kg threshold. Action recommended within 24h.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-emerald-500/5 rounded-xl border border-emerald-500/10 flex items-start gap-3">
+                      <div className="mt-1 p-1 bg-emerald-500 rounded-full" />
+                      <div>
+                        <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider">System Nominal</p>
+                        <p className="text-[10px] text-slate-400 mt-1">All nutrient levels are within predicted optimal ranges for the next 48 hours.</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -944,7 +1172,198 @@ export default function App() {
               </div>
             </div>
           </motion.div>
-        ) : (
+        ) : activeTab === 'assistant' ? (
+          <motion.div 
+            key="assistant"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="grid grid-cols-1 lg:grid-cols-12 gap-8 h-[700px]"
+          >
+            <div className="lg:col-span-4 space-y-6">
+              <div className="glass-card p-8 h-full flex flex-col gap-6">
+                <div className="flex items-center gap-3">
+                  <BrainCircuit className="text-emerald-400" size={24} />
+                  <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">AI Core</h2>
+                </div>
+                <div className="space-y-4 flex-grow">
+                  <div className="p-4 bg-emerald-500/5 rounded-xl border border-emerald-500/10">
+                    <p className="text-[10px] font-bold text-emerald-400 uppercase mb-2">Capabilities</p>
+                    <ul className="space-y-2">
+                      {['Soil Analysis', 'Crop Recommendations', 'Pest Prediction', 'Irrigation Optimization'].map((cap, i) => (
+                        <li key={i} className="flex items-center gap-2 text-[10px] text-slate-400">
+                          <div className="w-1 h-1 rounded-full bg-emerald-500" />
+                          {cap}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="p-4 bg-blue-500/5 rounded-xl border border-blue-500/10">
+                    <p className="text-[10px] font-bold text-blue-400 uppercase mb-2">Telemetry Context</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="text-[9px] text-slate-500">N: {data?.nitrogen}</div>
+                      <div className="text-[9px] text-slate-500">P: {data?.phosphorus}</div>
+                      <div className="text-[9px] text-slate-500">K: {data?.potassium}</div>
+                      <div className="text-[9px] text-slate-500">Temp: {data?.temperature}°C</div>
+                    </div>
+                  </div>
+                </div>
+                <div className="p-4 bg-slate-950/50 rounded-xl border border-slate-800 text-center">
+                  <p className="text-[9px] text-slate-500 italic">Powered by Gemini 3.1 Pro</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-8 flex flex-col glass-card overflow-hidden">
+              <div className="p-4 border-b border-slate-800 bg-slate-950/30 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="tech-label text-xs">Uplink Active</span>
+                </div>
+                <button 
+                  onClick={() => setChatMessages([{ role: 'model', text: "Chat history cleared. How can I help you?" }])}
+                  className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  Clear History
+                </button>
+              </div>
+              
+              <div className="flex-grow overflow-y-auto p-6 space-y-6 scrollbar-hide">
+                {chatMessages.map((msg, i) => (
+                  <motion.div 
+                    key={i}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div className={`max-w-[80%] p-4 rounded-2xl ${
+                      msg.role === 'user' 
+                        ? 'bg-emerald-500 text-white rounded-tr-none' 
+                        : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-tl-none'
+                    }`}>
+                      <div className="markdown-body text-xs leading-relaxed">
+                        <Markdown>{msg.text}</Markdown>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+                {chatLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl rounded-tl-none flex gap-2">
+                      <div className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce" />
+                      <div className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce [animation-delay:0.2s]" />
+                      <div className="w-1 h-1 bg-emerald-500 rounded-full animate-bounce [animation-delay:0.4s]" />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={handleSendMessage} className="p-4 bg-slate-950/50 border-t border-slate-800 flex gap-4">
+                <input 
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Ask about soil health, crop advice, or system status..."
+                  className="flex-grow bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
+                />
+                <button 
+                  type="submit"
+                  disabled={!chatInput.trim() || chatLoading}
+                  className="bg-emerald-500 hover:bg-emerald-400 text-white p-3 rounded-xl transition-colors disabled:opacity-50"
+                >
+                  <ChevronRight size={20} />
+                </button>
+              </form>
+            </div>
+          </motion.div>
+        ) : activeTab === 'control' ? (
+          <motion.div 
+            key="control"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="grid grid-cols-1 lg:grid-cols-3 gap-8"
+          >
+            <div className="glass-card p-8 space-y-8">
+              <div className="flex items-center gap-3">
+                <Layers className="text-blue-400" size={24} />
+                <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Node Selection</h2>
+              </div>
+              <div className="space-y-3">
+                {['Field Alpha', 'Field Beta', 'Greenhouse 01', 'North Orchard'].map((node) => (
+                  <button 
+                    key={node}
+                    onClick={() => setSelectedNode(node)}
+                    className={`w-full p-4 rounded-xl border transition-all flex items-center justify-between ${
+                      selectedNode === node 
+                        ? 'bg-blue-500/10 border-blue-500 text-blue-400' 
+                        : 'bg-slate-950/50 border-slate-800 text-slate-500 hover:border-slate-700'
+                    }`}
+                  >
+                    <span className="tech-label text-xs">{node}</span>
+                    <div className={`w-2 h-2 rounded-full ${selectedNode === node ? 'bg-blue-400 animate-pulse' : 'bg-slate-800'}`} />
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="glass-card p-8 flex flex-col justify-between">
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Droplets className="text-blue-400" size={24} />
+                      <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Irrigation</h2>
+                    </div>
+                    <div className={`px-2 py-1 rounded text-[8px] font-bold ${irrigationActive ? 'bg-blue-500 text-white' : 'bg-slate-800 text-slate-500'}`}>
+                      {irrigationActive ? 'FLOW ACTIVE' : 'STANDBY'}
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Remote valve control for {selectedNode}. Current soil saturation is {data?.humidity}%.
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setIrrigationActive(!irrigationActive)}
+                  className={`mt-8 w-full py-4 rounded-2xl font-black tracking-widest transition-all ${
+                    irrigationActive 
+                      ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/20' 
+                      : 'bg-blue-500 text-white shadow-lg shadow-blue-500/20 hover:bg-blue-400'
+                  }`}
+                >
+                  {irrigationActive ? 'EMERGENCY SHUTOFF' : 'ACTIVATE IRRIGATION'}
+                </button>
+              </div>
+
+              <div className="glass-card p-8 flex flex-col justify-between">
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Zap className="text-amber-400" size={24} />
+                      <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Nutrient Injector</h2>
+                    </div>
+                    <div className={`px-2 py-1 rounded text-[8px] font-bold ${fertilizerActive ? 'bg-amber-500 text-black' : 'bg-slate-800 text-slate-500'}`}>
+                      {fertilizerActive ? 'DOSING' : 'OFF'}
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Automated NPK injection system. Recommended for current stage: Vegetative.
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setFertilizerActive(!fertilizerActive)}
+                  className={`mt-8 w-full py-4 rounded-2xl font-black tracking-widest transition-all ${
+                    fertilizerActive 
+                      ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/20' 
+                      : 'bg-amber-500 text-black shadow-lg shadow-amber-500/20 hover:bg-amber-400'
+                  }`}
+                >
+                  {fertilizerActive ? 'STOP DOSING' : 'START NUTRIENT FEED'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        ) : activeTab === 'logbook' ? (
           <motion.div 
             key="logbook"
             initial={{ opacity: 0, y: 20 }}
@@ -1026,6 +1445,73 @@ export default function App() {
               )}
             </div>
           </motion.div>
+        ) : activeTab === 'settings' ? (
+          <motion.div 
+            key="settings"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="grid grid-cols-1 lg:grid-cols-2 gap-8"
+          >
+            <div className="glass-card p-8">
+              <div className="flex items-center gap-3 mb-8">
+                <Cpu className="text-blue-400" size={24} />
+                <h2 className="text-lg font-bold text-slate-100 uppercase tracking-widest">Field Thresholds</h2>
+              </div>
+              <div className="space-y-8">
+                {Object.entries(thresholds).map(([key, range]) => (
+                  <div key={key} className="space-y-4">
+                    <div className="flex justify-between items-center">
+                      <span className="tech-label capitalize">{key} Range</span>
+                      <span className="font-mono text-xs text-blue-400">{range.min} - {range.max}</span>
+                    </div>
+                    <div className="flex gap-4">
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="100" 
+                        value={range.min}
+                        onChange={(e) => setThresholds(prev => ({ ...prev, [key]: { ...prev[key as keyof typeof thresholds], min: parseInt(e.target.value) } }))}
+                        className="flex-1 accent-blue-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                      />
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="100" 
+                        value={range.max}
+                        onChange={(e) => setThresholds(prev => ({ ...prev, [key]: { ...prev[key as keyof typeof thresholds], max: parseInt(e.target.value) } }))}
+                        className="flex-1 accent-emerald-500 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="glass-card p-8 flex flex-col justify-center items-center text-center gap-6">
+              <div className="p-6 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                <ShieldCheck size={48} className="text-emerald-400" />
+              </div>
+              <h3 className="text-xl font-bold text-slate-100">System Calibration</h3>
+              <p className="text-sm text-slate-400 max-w-xs">
+                Adjust these thresholds to calibrate the "Health Score" and "AI Analysis" for your specific crop type and soil environment.
+              </p>
+              <button 
+                onClick={() => setThresholds({
+                  nitrogen: { min: 20, max: 80 },
+                  phosphorus: { min: 20, max: 80 },
+                  potassium: { min: 20, max: 80 },
+                  temp: { min: 15, max: 35 },
+                  humidity: { min: 30, max: 80 }
+                })}
+                className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl tech-label text-[10px] transition-colors"
+              >
+                Reset to Factory Defaults
+              </button>
+            </div>
+          </motion.div>
+        ) : (
+          <div />
         )}
       </AnimatePresence>
       </div>
