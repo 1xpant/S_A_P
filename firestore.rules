@@ -36,13 +36,15 @@ service cloud.firestore {
 
     // PILLAR 2: Validation Blueprints
     function isValidSoilReading(data) {
-      return data.keys().hasAll(['nitrogen', 'phosphorus', 'potassium', 'temperature', 'humidity', 'timestamp']) &&
+      return data.keys().hasAll(['nitrogen', 'phosphorus', 'potassium', 'temperature', 'humidity', 'timestamp', 'source']) &&
              data.nitrogen is number &&
              data.phosphorus is number &&
              data.potassium is number &&
              data.temperature is number &&
              data.humidity is number &&
-             data.timestamp is string && data.timestamp.size() <= 64;
+             data.timestamp is string && data.timestamp.size() <= 64 &&
+             data.source is string && data.source.size() <= 64 &&
+             (data.keys().hasAll(['latitude', 'longitude']) ? (data.latitude is number && data.longitude is number) : true);
     }
 
     // ===============================================================
