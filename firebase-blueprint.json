@@ -27,9 +27,56 @@
         "type": { "type": "string", "enum": ["observation", "action", "alert"], "description": "Category of the log" }
       },
       "required": ["content", "timestamp", "type"]
+    },
+    "CustomCrop": {
+      "title": "Custom Crop Profile",
+      "description": "User-added plant profile discovered via AI",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "idealNPK": { 
+          "type": "object",
+          "properties": { 
+            "n": { "type": "number" }, 
+            "p": { "type": "number" }, 
+            "k": { "type": "number" } 
+          }
+        },
+        "idealTemp": {
+          "type": "object",
+          "properties": { 
+            "min": { "type": "number" }, 
+            "max": { "type": "number" } 
+          }
+        },
+        "idealHumidity": {
+          "type": "object",
+          "properties": { 
+            "min": { "type": "number" }, 
+            "max": { "type": "number" } 
+          }
+        },
+        "description": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["name", "idealNPK", "idealTemp", "idealHumidity"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User-specific settings and layout configurations",
+      "type": "object",
+      "properties": {
+        "dashboardLayout": { "type": "array", "description": "Custom widget arrangement" },
+        "tabOrder": { "type": "array", "description": "Custom sidebar tab order" }
+      }
     }
   },
   "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User-specific layout and settings"
+    },
     "/readings": {
       "schema": "SoilReading",
       "description": "Historical log of all sensor readings"
@@ -41,6 +88,10 @@
     "/logs": {
       "schema": "LogEntry",
       "description": "User-generated field notes"
+    },
+    "/custom_crops": {
+      "schema": "CustomCrop",
+      "description": "Community-generated crop profiles"
     }
   }
 }

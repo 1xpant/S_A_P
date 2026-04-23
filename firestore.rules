@@ -1,59 +1,96 @@
-// ===============================================================
-// Assumed Data Model
-// ===============================================================
-//
-// Collection: latest
-// Document ID: status
-// Fields:
-//   - nitrogen: number (required) - Nitrogen level in mg/kg
-//   - phosphorus: number (required) - Phosphorus level in mg/kg
-//   - potassium: number (required) - Potassium level in mg/kg
-//   - temperature: number (required) - Temperature in Celsius
-//   - humidity: number (required) - Humidity percentage
-//   - latitude: number (optional) - GPS Latitude
-//   - longitude: number (optional) - GPS Longitude
-//   - timestamp: string (required) - ISO 8601 timestamp
-//   - source: string (optional) - Data source label
-//
-// Collection: readings
-// Document ID: [auto-generated]
-// Fields:
-//   - [Same as latest/status]
-//
-// ===============================================================
-
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
     // ===============================================================
-    // Helper Functions
+    // PILLAR 0: Global Safety Net
     // ===============================================================
-    
-    function isAuthenticated() {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Helpers
+    // ===============================================================
+    function isSignedIn() {
       return request.auth != null;
     }
 
-    // ===============================================================
-    // Rules
-    // ===============================================================
-
-    // WARNING: Public access enabled for direct ESP32 connection
-    match /latest/status {
-      allow read, write: if true;
+    // PILLAR 4 & 6: Verified Identity
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
     }
 
+    // PILLAR 3: Path Variable Hardening
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // PILLAR 2: Validation Blueprints
+    function isValidSoilReading(data) {
+      return data.keys().hasAll(['nitrogen', 'phosphorus', 'potassium', 'temperature', 'humidity', 'timestamp']) &&
+             data.nitrogen is number &&
+             data.phosphorus is number &&
+             data.potassium is number &&
+             data.temperature is number &&
+             data.humidity is number &&
+             data.timestamp is string && data.timestamp.size() <= 64;
+    }
+
+    // ===============================================================
+    // PILLAR 1: Data Collections
+    // ===============================================================
+
     match /readings/{readingId} {
-      allow read, write: if true;
+      // Allow reading history only to verified users (reduces scraping risk)
+      allow read: if isVerified();
+      // Allow creation with strict schema validation
+      allow create: if isValidSoilReading(incoming());
+      // ONLY allow deletion for admins or specific power users if app grows,
+      // but for now, require verification at minimum.
+      allow delete: if isVerified();
+    }
+
+    match /latest/status {
+      // Allow status view for signed-in members (initial landing)
+      // Transition to isVerified() for sensitive actions
+      allow read: if isSignedIn();
+      // Single-document status singleton update
+      allow write: if isVerified() && isValidSoilReading(incoming());
+    }
+
+    match /test/connection {
+      allow read: if true;
     }
 
     match /logs/{logId} {
-      allow read, write: if true;
+      allow read: if true;
+      // PILLAR 5: Individual Resource Protection
+      allow create: if isVerified() && 
+                      incoming().userId == request.auth.uid &&
+                      incoming().content is string && incoming().content.size() <= 5000;
+      allow update, delete: if isVerified() && existing().userId == request.auth.uid;
     }
-    
-    // Default deny for everything else
-    match /{document=**} {
-      allow read, write: if false;
+
+    match /custom_crops/{cropId} {
+      allow read: if true;
+      allow create: if isVerified() && 
+                      incoming().createdBy == request.auth.uid &&
+                      incoming().name is string && incoming().name.size() <= 100;
+      allow update, delete: if isVerified() && existing().createdBy == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      // PILLAR 4: User-specific tier logic
+      allow read, write: if isVerified() && request.auth.uid == userId;
     }
   }
 }
